@@ -7,9 +7,9 @@ An example of writing lots of JSON data really fast into Postgres
 
 ## Prerequisites 
 
-[UV](https://github.com/astral-sh/uv)
-Python
-[Podman](https://podman.io/) if you want to play with Postgres locally
+- [UV](https://github.com/astral-sh/uv)
+- Python
+- [Podman](https://podman.io/) if you want to play with Postgres locally
 
 
 ## Start up Postgres 
