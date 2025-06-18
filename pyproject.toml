@@ -1,0 +1,11 @@
+[project]
+name = "pgfastloadexample"
+version = "0.1.0"
+description = "Example of using pgfastload to load JSON data into postgres"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "alive-progress>=3.2.0",
+    "faker>=37.3.0",
+    "psycopg2-binary>=2.9.10",
+]
