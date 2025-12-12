@@ -1,9 +1,12 @@
 import json
 import multiprocessing
 import os
+import io
+import csv
 import logging
 import argparse
 import psycopg2
+
 
 def db_handles(count, pg_host, pg_port, pg_user, pg_password, pg_database):
     """
@@ -14,16 +17,28 @@ def db_handles(count, pg_host, pg_port, pg_user, pg_password, pg_database):
         handles.append(
             psycopg2.connect(
                 f"host={pg_host} port={pg_port} user={pg_user} password={pg_password} dbname={pg_database}",
-            ))
+            )
+        )
     return handles
+
 
 def write_to_db(batch, db_handle):
     """
-    Write a batch of data to the database.
+    Write this to use the PG Copy command for better performance
     """
-    db_handle.cursor().executemany("INSERT INTO users (first_name, last_name, email) VALUES (%(first_name)s, %(last_name)s, %(email)s)", batch)
+    buff = io.StringIO()
+    writer = csv.writer(buff, delimiter="\t")
+    for record in batch:
+        row = (record["first_name"], record["last_name"], record["email"])
+        writer.writerow(row)
+
+    buff.seek(0)
+    with db_handle.cursor() as cur:
+        cur.copy_from(
+            buff, "users", columns=("first_name", "last_name", "email"), sep="\t"
+        )
     db_handle.commit()
-    pass
+
 
 def worker_process(queue, worker_id, batch_size, logger, db_handle):
     """
@@ -40,13 +55,17 @@ def worker_process(queue, worker_id, batch_size, logger, db_handle):
                 break
             batch.append(item)
             if len(batch) >= batch_size:
-                logger.info(f"Worker {worker_id} (PID {os.getpid()}) processing batch of {len(batch)} items:")
+                logger.info(
+                    f"Worker {worker_id} (PID {os.getpid()}) processing batch of {len(batch)} items:"
+                )
                 write_to_db(batch, db_handle)
                 batch = []
         except Exception as e:
             # If queue is empty for a while, process any remaining items in the batch
             if batch:
-                logger.info(f"Worker {worker_id} (PID {os.getpid()}) processing remaining batch of {len(batch)} items due to queue empty:")
+                logger.info(
+                    f"Worker {worker_id} (PID {os.getpid()}) processing remaining batch of {len(batch)} items due to queue empty:"
+                )
                 write_to_db(batch, db_handle)
                 batch = []
             # Allow workers to exit if the queue is empty for a prolonged period
@@ -55,11 +74,23 @@ def worker_process(queue, worker_id, batch_size, logger, db_handle):
             pass
     # Process any remaining items in the batch before exiting
     if batch:
-        logger.info(f"Worker {worker_id} (PID {os.getpid()}) processing final batch of {len(batch)} items:")
+        logger.info(
+            f"Worker {worker_id} (PID {os.getpid()}) processing final batch of {len(batch)} items:"
+        )
         write_to_db(batch, db_handle)
     logger.info(f"Worker {worker_id} finished.")
 
-def main(json_file_path, num_workers, batch_size, pg_host, pg_port, pg_user, pg_password, pg_database):
+
+def main(
+    json_file_path,
+    num_workers,
+    batch_size,
+    pg_host,
+    pg_port,
+    pg_user,
+    pg_password,
+    pg_database,
+):
     """
     Main function to load JSON, populate queue, and manage workers.
     """
@@ -69,21 +100,28 @@ def main(json_file_path, num_workers, batch_size, pg_host, pg_port, pg_user, pg_
 
     # Load JSON data
     try:
-        with open(json_file_path, 'r') as f:
+        with open(json_file_path, "r") as f:
             data = json.load(f)
         logger.info(f"Successfully loaded {len(data)} entries from {json_file_path}")
     except FileNotFoundError:
         logger.error(f"Error: JSON file not found at {json_file_path}")
         return
     except json.JSONDecodeError:
-        logger.error(f"Error: Could not decode JSON from {json_file_path}. Please check file format.")
+        logger.error(
+            f"Error: Could not decode JSON from {json_file_path}. Please check file format."
+        )
         return
 
     # Start worker processes
-    handles = db_handles(num_workers, pg_host, pg_port, pg_user, pg_password, pg_database)
+    handles = db_handles(
+        num_workers, pg_host, pg_port, pg_user, pg_password, pg_database
+    )
     workers = []
     for i in range(num_workers):
-        p = multiprocessing.Process(target=worker_process, args=(data_queue, i + 1, batch_size, logger, handles[i]))
+        p = multiprocessing.Process(
+            target=worker_process,
+            args=(data_queue, i + 1, batch_size, logger, handles[i]),
+        )
         workers.append(p)
         p.start()
 
@@ -101,21 +139,49 @@ def main(json_file_path, num_workers, batch_size, pg_host, pg_port, pg_user, pg_
 
     logger.info("All workers have finished. Main process exiting.")
 
+
 if __name__ == "__main__":
-    
-    parser = argparse.ArgumentParser(prog="data_loader", description="Load data from a JSON file and process it in parallel.")
-    parser.add_argument("--data-file", type=str, help="Path to the JSON file to load", default="data.json")
-    parser.add_argument("--num-workers", type=int, help="Number of worker processes to use", default=10)
-    parser.add_argument("--batch-size", type=int, help="Number of items to process in each batch", default=200)
-    parser.add_argument("--pg-host", type=str, help="Postgres host", default="localhost")
+
+    parser = argparse.ArgumentParser(
+        prog="data_loader",
+        description="Load data from a JSON file and process it in parallel.",
+    )
+    parser.add_argument(
+        "--data-file",
+        type=str,
+        help="Path to the JSON file to load",
+        default="data.json",
+    )
+    parser.add_argument(
+        "--num-workers", type=int, help="Number of worker processes to use", default=10
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        help="Number of items to process in each batch",
+        default=1000,
+    )
+    parser.add_argument(
+        "--pg-host", type=str, help="Postgres host", default="localhost"
+    )
     parser.add_argument("--pg-port", type=int, help="Postgres port", default=5432)
     parser.add_argument("--pg-user", type=str, help="Postgres user", default="postgres")
-    parser.add_argument("--pg-password", type=str, help="Postgres password", default="FastLoad3RR")
-    parser.add_argument("--pg-database", type=str, help="Postgres database", default="fastload")
+    parser.add_argument(
+        "--pg-password", type=str, help="Postgres password", default="FastLoad3RR"
+    )
+    parser.add_argument(
+        "--pg-database", type=str, help="Postgres database", default="fastload"
+    )
 
     args = parser.parse_args()
 
     main(
-        args.data_file, args.num_workers, args.batch_size,
-        args.pg_host, args.pg_port, args.pg_user, args.pg_password, args.pg_database,
+        args.data_file,
+        args.num_workers,
+        args.batch_size,
+        args.pg_host,
+        args.pg_port,
+        args.pg_user,
+        args.pg_password,
+        args.pg_database,
     )
